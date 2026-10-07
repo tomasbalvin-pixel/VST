@@ -633,7 +633,7 @@ void NeedleMeter::paint (juce::Graphics& g)
     // Arc of +-48 degrees sized to the face width, pivot hidden below the face.
     const float radius = (face.getWidth() * 0.5f - 16.0f) / std::sin (juce::degreesToRadians (48.0f));
     const auto pivot = juce::Point<float> (face.getCentreX(), face.getY() + 24.0f + radius);
-    constexpr float minDb = -20.0f, maxDb = 3.0f;
+    static constexpr float minDb = -20.0f, maxDb = 3.0f;
     auto angleFor = [] (float db)
     {
         // VU-style non-linear spacing: position follows the linear voltage.
