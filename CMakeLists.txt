@@ -48,7 +48,7 @@ target_sources(Patina PRIVATE
 
 target_include_directories(Patina PRIVATE Source)
 
-# The UI carries Cyrillic legends in UTF-8 string literals.
+# Sources are UTF-8.
 target_compile_options(Patina PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
 
 target_compile_definitions(Patina PUBLIC

@@ -3,15 +3,14 @@
 #include "PluginProcessor.h"
 
 /**
-    Look and feel modelled on Soviet laboratory test equipment (oscilloscopes,
-    signal generators, level meters of the 1970s): hammertone enamel panels,
-    black bakelite knobs with fluted skirts, chicken-head range selectors,
-    bat-lever toggles, VFD read-outs and white silkscreened legends.
+    Minimal look: flat warm off-white, near-black type, one accent colour.
+    Knobs are thin arcs, choices are plain words, sections are separated by
+    whitespace and hairlines only.
 */
-class SovietLookAndFeel final : public juce::LookAndFeel_V4
+class MinimalLookAndFeel final : public juce::LookAndFeel_V4
 {
 public:
-    SovietLookAndFeel();
+    MinimalLookAndFeel();
 
     void drawRotarySlider (juce::Graphics&, int x, int y, int w, int h, float pos,
                            float startAngle, float endAngle, juce::Slider&) override;
@@ -21,119 +20,87 @@ public:
     juce::Font getComboBoxFont (juce::ComboBox&) override;
     juce::Font getPopupMenuFont() override;
     void drawPopupMenuBackground (juce::Graphics&, int w, int h) override;
-
-private:
-    void drawBakeliteKnob (juce::Graphics&, juce::Point<float> c, float r, float angle, bool enabled);
-    void drawChickenHead (juce::Graphics&, juce::Point<float> c, float r, float angle);
 };
 
 //==============================================================================
-/** Knob with a Cyrillic legend, English sub-legend and a VFD read-out window. */
-class LabelledKnob final : public juce::Component
+/** Arc knob with a lower-case label above and its value below. */
+class Knob final : public juce::Component
 {
 public:
-    LabelledKnob (juce::AudioProcessorValueTreeState&, const char* paramID, juce::String ru, juce::String en);
+    Knob (juce::AudioProcessorValueTreeState&, const char* paramID, juce::String label);
     void paint (juce::Graphics&) override;
     void resized() override;
 
     juce::Slider slider { juce::Slider::RotaryHorizontalVerticalDrag, juce::Slider::NoTextBox };
 
 private:
-    juce::String ru, en;
+    juce::String label;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> attachment;
 };
 
-/** Detented rotary range switch with its positions engraved around it. Clicking a legend selects it. */
-class Selector final : public juce::Component
+/** A choice parameter shown as a row of words; the selected one is dark and underlined. */
+class Choice final : public juce::Component
 {
 public:
-    Selector (juce::AudioProcessorValueTreeState&, const char* paramID, juce::String ru, juce::String en,
-              juce::StringArray positionsRu, juce::StringArray positionsEn);
+    Choice (juce::AudioProcessorValueTreeState&, const char* paramID, juce::StringArray words);
     void paint (juce::Graphics&) override;
-    void resized() override;
     void mouseDown (const juce::MouseEvent&) override;
-
-    juce::Slider slider { juce::Slider::RotaryHorizontalVerticalDrag, juce::Slider::NoTextBox };
+    void mouseMove (const juce::MouseEvent&) override;
+    void mouseExit (const juce::MouseEvent&) override;
 
 private:
-    juce::Point<float> labelCentre (int index) const;
+    juce::Rectangle<float> wordBounds (int index) const;
+    int indexAt (juce::Point<float>) const;
 
-    juce::String ru, en;
-    juce::StringArray posRu, posEn;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> attachment;
+    juce::StringArray words;
+    int selected = 0, hovered = -1;
+    std::unique_ptr<juce::ParameterAttachment> attachment;
 };
 
-/** Bat-lever toggle switch with ВКЛ / ВЫКЛ legends. */
-class LabelledToggle final : public juce::Component
+/** Small on/off switch: a dot and a word. */
+class Toggle final : public juce::Component
 {
 public:
-    LabelledToggle (juce::AudioProcessorValueTreeState&, const char* paramID, juce::String ru, juce::String en);
-    void paint (juce::Graphics&) override;
-    void resized() override;
+    Toggle (juce::AudioProcessorValueTreeState&, const char* paramID, juce::String label);
+    void resized() override { button.setBounds (getLocalBounds()); }
 
     juce::ToggleButton button;
 
 private:
-    juce::String ru, en;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> attachment;
 };
 
-/** Jewel indicator lamp. */
-class Lamp final : public juce::Component
-{
-public:
-    Lamp (juce::Colour c, juce::String legend) : colour (c), text (std::move (legend)) {}
-    void setLevel (float newLevel);
-    void paint (juce::Graphics&) override;
-
-private:
-    juce::Colour colour;
-    juce::String text;
-    float level = 0.0f;
-};
-
-/** Green-phosphor CRT. Subclasses draw the trace. */
-class Scope : public juce::Component
-{
-public:
-    void paint (juce::Graphics&) override;
-
-protected:
-    virtual void drawTrace (juce::Graphics&, juce::Rectangle<float> screen) = 0;
-    static void strokeTrace (juce::Graphics&, const juce::Path&);
-};
-
-class TransferScope final : public Scope
+class CurvePlot final : public juce::Component
 {
 public:
     void setState (int type, float driveDb, float blend);
+    void paint (juce::Graphics&) override;
 
 private:
-    void drawTrace (juce::Graphics&, juce::Rectangle<float>) override;
     int satType = -1;
     float drive = -1.0f, blendAmount = -1.0f;
 };
 
-class LfoScope final : public Scope
+class LfoPlot final : public juce::Component
 {
 public:
     void setState (int shape, float phase, float value);
+    void paint (juce::Graphics&) override;
 
 private:
-    void drawTrace (juce::Graphics&, juce::Rectangle<float>) override;
     int shape = 0;
     float phase = 0.0f, value = 0.0f;
 };
 
-/** Moving-coil level meter with VU ballistics. */
-class NeedleMeter final : public juce::Component
+/** Output level as a single hairline bar; turns accent on overs. */
+class LevelBar final : public juce::Component
 {
 public:
-    void setLevel (float rms);
+    void setLevel (float rms, float peak);
     void paint (juce::Graphics&) override;
 
 private:
-    float needleDb = -30.0f;
+    float levelDb = -60.0f, hold = 0.0f;
 };
 
 //==============================================================================
@@ -150,45 +117,39 @@ private:
     void timerCallback() override;
     void refreshVisibility();
     void updateModulationDisplay();
-    void drawSection (juce::Graphics&, juce::Rectangle<int>, const juce::String& ru, const juce::String& en);
 
     PatinaProcessor& processor;
-    SovietLookAndFeel lnf;
-    juce::Image panelTexture;
+    MinimalLookAndFeel lnf;
 
     // Saturation
-    TransferScope transferScope;
-    Selector satType, satPos;
-    LabelledKnob drive, satTone, satBlend;
+    Choice satType, satPos;
+    CurvePlot curve;
+    Knob drive, satTone, satBlend;
 
     // Space
-    Selector mode;
-    LabelledKnob time, feedback, preDelay, decay, tone, age, width, division;
-    LabelledToggle sync;
+    Choice mode;
+    Knob time, feedback, preDelay, decay, tone, age, width, division;
+    Toggle sync;
 
     // Output
-    NeedleMeter meter;
-    LabelledKnob duck, mix, output;
-    Lamp powerLamp { juce::Colour (0xff59ff7a), juce::String::fromUTF8 ("СЕТЬ") };
-    Lamp overloadLamp { juce::Colour (0xffff3b2a), juce::String::fromUTF8 ("ПЕРЕГР.") };
+    LevelBar level;
+    Knob duck, mix, output;
 
     // LFO
-    LfoScope lfoScope;
-    Lamp lfoLamp { juce::Colour (0xffff5a2a), juce::String::fromUTF8 ("НЧГ") };
-    Selector lfoShape;
-    LabelledKnob lfoRate, lfoDiv;
-    LabelledToggle lfoSync;
+    Choice lfoShape;
+    LfoPlot lfoPlot;
+    Knob lfoRate, lfoDiv;
+    Toggle lfoSync;
     juce::ComboBox lfoTarget[ParamIDs::numLfoSlots];
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> lfoTargetAtt[ParamIDs::numLfoSlots];
-    std::unique_ptr<LabelledKnob> lfoDepth[ParamIDs::numLfoSlots];
+    std::unique_ptr<Knob> lfoDepth[ParamIDs::numLfoSlots];
 
-    std::array<LabelledKnob*, kNumModTargets> targetKnobs {};
+    std::array<Knob*, kNumModTargets> targetKnobs {};
     juce::String modeText;
     int currentMode = -1;
     bool lastSync = false;
-    float overloadHold = 0.0f;
 
-    juce::Rectangle<int> nameplate, satPanel, spacePanel, outPanel, lfoPanel, modePlate, slotArea[ParamIDs::numLfoSlots];
+    juce::Rectangle<int> header, satArea, spaceArea, outArea, lfoArea, modeTextArea;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PatinaEditor)
 };
