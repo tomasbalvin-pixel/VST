@@ -8,11 +8,26 @@ const juce::StringArray PatinaProcessor::satTypeNames { "Tape", "Tube", "Fuzz", 
 const juce::StringArray PatinaProcessor::satPosNames { "Pre", "Space", "Post" };
 const juce::StringArray PatinaProcessor::divisionNames { "1/32", "1/16T", "1/16", "1/8T", "1/16D", "1/8", "1/4T",
                                                          "1/8D", "1/4",  "1/2T",  "1/4D", "1/2", "1/1" };
+const juce::StringArray PatinaProcessor::lfoShapeNames { "Sine", "Triangle", "Square", "Saw", "Sample & Hold", "Drift" };
+const juce::StringArray PatinaProcessor::lfoDivisionNames { "8 bars", "4 bars", "2 bars", "1 bar", "1/2", "1/4D", "1/4",
+                                                            "1/4T",   "1/8D",   "1/8",    "1/8T",  "1/16", "1/32" };
+const juce::StringArray PatinaProcessor::lfoTargetNames { "Off",  "Time", "Feedback", "Pre-Delay", "Decay",    "Tone",
+                                                          "Age",  "Width", "Mix",     "Drive",     "Sat Tone", "Sat Blend" };
+
+const char* PatinaProcessor::modTargetParamID (int target)
+{
+    static const char* ids[] = { nullptr,        ParamIDs::time, ParamIDs::feedback, ParamIDs::preDelay,
+                                 ParamIDs::decay, ParamIDs::tone, ParamIDs::age,      ParamIDs::width,
+                                 ParamIDs::mix,   ParamIDs::drive, ParamIDs::satTone, ParamIDs::satBlend };
+    return juce::isPositiveAndBelow (target, kNumModTargets) ? ids[target] : nullptr;
+}
 
 namespace
 {
 constexpr float kDivisionBeats[] = { 0.125f, 1.0f / 6.0f, 0.25f, 1.0f / 3.0f, 0.375f, 0.5f, 2.0f / 3.0f,
                                      0.75f,  1.0f,        4.0f / 3.0f, 1.5f,  2.0f, 4.0f };
+constexpr float kLfoDivisionBeats[] = { 32.0f, 16.0f, 8.0f, 4.0f, 2.0f, 1.5f, 1.0f, 2.0f / 3.0f,
+                                        0.75f, 0.5f,  1.0f / 3.0f, 0.25f, 0.125f };
 constexpr float kMaxDelayMs = 5000.0f;
 
 juce::String pct (float v, int) { return juce::String (juce::roundToInt (v * 100.0f)) + "%"; }
@@ -49,6 +64,18 @@ const Preset kPresets[] = {
                                 { "mix", 0.25f }, { "drive", 3 }, { "sattype", 0 }, { "satpos", 0 } } },
     { "Crushed Plate Wash",   { { "mode", 3 }, { "predelay", 60 }, { "decay", 8.0f }, { "tone", 0.45f }, { "age", 0.6f },
                                 { "mix", 0.5f }, { "drive", 22 }, { "sattype", 3 }, { "satpos", 2 }, { "satblend", 0.5f } } },
+    { "Seasick Tape",         { { "mode", 0 }, { "time", 380 }, { "feedback", 0.55f }, { "tone", 0.5f }, { "age", 0.5f },
+                                { "mix", 0.35f }, { "drive", 8 }, { "satpos", 1 },
+                                { "lfoshape", 5 }, { "lforate", 0.35f }, { "lfotarget1", 1 }, { "lfodepth1", 0.12f },
+                                { "lfotarget2", 5 }, { "lfodepth2", -0.3f } } },
+    { "Breathing Plate",      { { "mode", 3 }, { "predelay", 30 }, { "decay", 4.0f }, { "tone", 0.55f }, { "mix", 0.35f },
+                                { "drive", 4 }, { "lfoshape", 0 }, { "lfosync", 1 }, { "lfodiv", 2 },
+                                { "lfotarget1", 4 }, { "lfodepth1", 0.35f }, { "lfotarget2", 5 }, { "lfodepth2", 0.3f },
+                                { "lfotarget3", 7 }, { "lfodepth3", 0.5f } } },
+    { "Stuttering Spring",    { { "mode", 2 }, { "decay", 3.0f }, { "tone", 0.65f }, { "age", 0.6f }, { "mix", 0.4f },
+                                { "drive", 14 }, { "sattype", 1 }, { "satpos", 1 },
+                                { "lfoshape", 4 }, { "lfosync", 1 }, { "lfodiv", 9 },
+                                { "lfotarget1", 9 }, { "lfodepth1", 0.6f }, { "lfotarget2", 8 }, { "lfodepth2", 0.4f } } },
 };
 } // namespace
 
@@ -65,6 +92,16 @@ PatinaProcessor::PatinaProcessor()
     pWidth = raw (ParamIDs::width);       pDuck = raw (ParamIDs::duck);         pMix = raw (ParamIDs::mix);
     pDrive = raw (ParamIDs::drive);       pSatType = raw (ParamIDs::satType);   pSatPos = raw (ParamIDs::satPos);
     pSatTone = raw (ParamIDs::satTone);   pSatBlend = raw (ParamIDs::satBlend); pOutput = raw (ParamIDs::output);
+    pLfoRate = raw (ParamIDs::lfoRate);   pLfoSync = raw (ParamIDs::lfoSync);   pLfoDiv = raw (ParamIDs::lfoDiv);
+    pLfoShape = raw (ParamIDs::lfoShape);
+    for (int i = 0; i < ParamIDs::numLfoSlots; ++i)
+    {
+        pLfoTarget[(size_t) i] = raw (ParamIDs::lfoTarget[i]);
+        pLfoDepth[(size_t) i] = raw (ParamIDs::lfoDepth[i]);
+    }
+    for (int t = 0; t < kNumModTargets; ++t)
+        if (auto* id = modTargetParamID (t))
+            targetParams[(size_t) t] = apvts.getParameter (id);
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout PatinaProcessor::createLayout()
@@ -116,6 +153,23 @@ juce::AudioProcessorValueTreeState::ParameterLayout PatinaProcessor::createLayou
     floatParam (ParamIDs::satBlend, "Sat Blend", { 0.0f, 1.0f }, 1.0f, pct, pctFromText);
     floatParam (ParamIDs::output, "Output", { -24.0f, 12.0f }, 0.0f, db, plainFromText);
 
+    NormalisableRange<float> rateRange (0.02f, 20.0f);
+    rateRange.setSkewForCentre (1.0f);
+    floatParam (ParamIDs::lfoRate, "LFO Rate", rateRange, 0.5f,
+                [] (float v, int) { return String (v, v < 1.0f ? 2 : 1) + " Hz"; }, plainFromText);
+    layout.add (std::make_unique<AudioParameterChoice> (ParameterID { ParamIDs::lfoSync, 1 }, "LFO Sync", StringArray { "Off", "On" }, 0));
+    layout.add (std::make_unique<AudioParameterChoice> (ParameterID { ParamIDs::lfoDiv, 1 }, "LFO Division", lfoDivisionNames, 3));
+    layout.add (std::make_unique<AudioParameterChoice> (ParameterID { ParamIDs::lfoShape, 1 }, "LFO Shape", lfoShapeNames, 0));
+    for (int i = 0; i < ParamIDs::numLfoSlots; ++i)
+    {
+        const String n (i + 1);
+        layout.add (std::make_unique<AudioParameterChoice> (ParameterID { ParamIDs::lfoTarget[i], 1 }, "LFO Target " + n,
+                                                            lfoTargetNames, 0));
+        floatParam (ParamIDs::lfoDepth[i], ("LFO Depth " + n).toRawUTF8(), { -1.0f, 1.0f }, 0.0f,
+                    [] (float v, int) { return (v > 0.0f ? "+" : "") + String (roundToInt (v * 100.0f)) + "%"; },
+                    pctFromText);
+    }
+
     return layout;
 }
 
@@ -151,60 +205,144 @@ void PatinaProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     widthSmoothed.setCurrentAndTargetValue (pWidth->load());
     outputSmoothed.setCurrentAndTargetValue (dbToGain (pOutput->load()));
 
+    lfo.reset();
+    outputLevelUI = 0.0f;
+
     duckEnv = 0.0f;
     duckAttack = 1.0f - std::exp (-1.0f / (0.004f * (float) sampleRate));
     duckRelease = 1.0f - std::exp (-1.0f / (0.25f * (float) sampleRate));
 }
 
-float PatinaProcessor::currentDelayMs()
+PatinaProcessor::Settings PatinaProcessor::readSettings() const
 {
-    if (pSync->load() < 0.5f)
-        return pTime->load();
-
-    if (auto* ph = getPlayHead())
-        if (auto pos = ph->getPosition())
-            if (auto bpm = pos->getBpm(); bpm.hasValue() && *bpm > 1.0)
-                lastBpm = *bpm;
-
-    const int div = juce::jlimit (0, (int) std::size (kDivisionBeats) - 1, (int) pDivision->load());
-    return juce::jmin (kMaxDelayMs - 50.0f, (float) (kDivisionBeats[div] * 60000.0 / lastBpm));
+    Settings st;
+    st.mode = (int) pMode->load();
+    st.satType = (int) pSatType->load();
+    st.satPos = (int) pSatPos->load();
+    st.division = juce::jlimit (0, (int) std::size (kDivisionBeats) - 1, (int) pDivision->load());
+    st.sync = pSync->load() > 0.5f;
+    st.time = pTime->load();
+    st.feedback = pFeedback->load();
+    st.preDelay = pPreDelay->load();
+    st.decay = pDecay->load();
+    st.tone = pTone->load();
+    st.age = pAge->load();
+    st.width = pWidth->load();
+    st.mix = pMix->load();
+    st.duck = pDuck->load();
+    st.drive = pDrive->load();
+    st.satTone = pSatTone->load();
+    st.satBlend = pSatBlend->load();
+    st.output = pOutput->load();
+    return st;
 }
 
-void PatinaProcessor::updateEngineParams (float delayMs)
+float PatinaProcessor::delayMsFor (const Settings& st) const
 {
-    SpaceSat sat;
-    sat.enabled = (SatPosition) (int) pSatPos->load() == SatPosition::Space;
-    sat.type = (SatType) (int) pSatType->load();
-    sat.gain = dbToGain (pDrive->load());
-    sat.amount = pDrive->load() / 36.0f;
-    sat.blend = pSatBlend->load();
+    if (! st.sync)
+        return st.time;
+    return juce::jmin (kMaxDelayMs - 50.0f, (float) (kDivisionBeats[st.division] * 60000.0 / lastBpm));
+}
 
-    const float tone = pTone->load(), age = pAge->load();
+float PatinaProcessor::lfoValueForChunk (int chunkStart, int chunkLen, double ppqAtBlockStart, bool transportRunning)
+{
+    const bool synced = pLfoSync->load() > 0.5f;
+    const int div = juce::jlimit (0, (int) std::size (kLfoDivisionBeats) - 1, (int) pLfoDiv->load());
+    const double cycleBeats = kLfoDivisionBeats[div];
+    const auto shape = (Lfo::Shape) (int) pLfoShape->load();
+
+    if (synced && transportRunning)
+    {
+        // Phase-locked to the song position, so the LFO lands identically on every playback.
+        const double ppq = ppqAtBlockStart + (double) chunkStart / sr * lastBpm / 60.0;
+        lfo.setPhase (ppq / cycleBeats);
+        return lfo.value (shape);
+    }
+
+    const float v = lfo.value (shape);
+    const double rateHz = synced ? lastBpm / 60.0 / cycleBeats : (double) pLfoRate->load();
+    lfo.advance ((double) chunkLen / sr, rateHz);
+    return v;
+}
+
+void PatinaProcessor::applyModulation (Settings& st, float& delayMs, float lfoValue)
+{
+    std::array<float, kNumModTargets> offset {};
+    for (int i = 0; i < ParamIDs::numLfoSlots; ++i)
+    {
+        const int t = (int) pLfoTarget[(size_t) i]->load();
+        if (t > 0 && t < kNumModTargets)
+            offset[(size_t) t] += 0.5f * pLfoDepth[(size_t) i]->load() * lfoValue;
+    }
+
+    for (int t = 1; t < kNumModTargets; ++t)
+        modOffsetUI[(size_t) t].store (offset[(size_t) t], std::memory_order_relaxed);
+
+    // Offsets are applied in normalised parameter space, so a given depth
+    // feels the same on every target regardless of its range or skew.
+    auto mod = [&] (ModTarget target, float plain)
+    {
+        const float off = offset[(size_t) target];
+        if (juce::exactlyEqual (off, 0.0f))
+            return plain;
+        auto* p = targetParams[(size_t) target];
+        const auto& range = p->getNormalisableRange();
+        const float norm = range.convertTo0to1 (juce::jlimit (range.start, range.end, plain));
+        return range.convertFrom0to1 (juce::jlimit (0.0f, 1.0f, norm + off));
+    };
+
+    delayMs = mod (ModTarget::Time, delayMs);
+    st.feedback = mod (ModTarget::Feedback, st.feedback);
+    st.preDelay = mod (ModTarget::PreDelay, st.preDelay);
+    st.decay = mod (ModTarget::Decay, st.decay);
+    st.tone = mod (ModTarget::Tone, st.tone);
+    st.age = mod (ModTarget::Age, st.age);
+    st.width = mod (ModTarget::Width, st.width);
+    st.mix = mod (ModTarget::Mix, st.mix);
+    st.drive = mod (ModTarget::Drive, st.drive);
+    st.satTone = mod (ModTarget::SatTone, st.satTone);
+    st.satBlend = mod (ModTarget::SatBlend, st.satBlend);
+}
+
+void PatinaProcessor::applySettings (const Settings& st, float delayMs)
+{
+    saturator.setParameters ((SatType) st.satType, st.drive, st.satTone, st.satBlend);
+
+    SpaceSat sat;
+    sat.enabled = (SatPosition) st.satPos == SatPosition::Space;
+    sat.type = (SatType) st.satType;
+    sat.gain = dbToGain (st.drive);
+    sat.amount = st.drive / 36.0f;
+    sat.blend = st.satBlend;
 
     EchoEngine::Params ep;
     ep.delayMs = delayMs;
-    ep.feedback = pFeedback->load();
-    ep.tone = tone;
-    ep.age = age;
+    ep.feedback = st.feedback;
+    ep.tone = st.tone;
+    ep.age = st.age;
     ep.sat = sat;
     tapeEcho.setParams (ep);
     bbdEcho.setParams (ep);
 
     SpringEngine::Params sp;
-    sp.preDelayMs = pPreDelay->load();
-    sp.decaySec = pDecay->load();
-    sp.tone = tone;
-    sp.age = age;
+    sp.preDelayMs = st.preDelay;
+    sp.decaySec = st.decay;
+    sp.tone = st.tone;
+    sp.age = st.age;
     sp.sat = sat;
     spring.setParams (sp);
 
     PlateEngine::Params pp;
-    pp.preDelayMs = pPreDelay->load();
-    pp.decaySec = pDecay->load();
-    pp.tone = tone;
-    pp.age = age;
+    pp.preDelayMs = st.preDelay;
+    pp.decaySec = st.decay;
+    pp.tone = st.tone;
+    pp.age = st.age;
     pp.sat = sat;
     plate.setParams (pp);
+
+    mixSmoothed.setTargetValue (st.mix);
+    widthSmoothed.setTargetValue (st.width);
+    outputSmoothed.setTargetValue (dbToGain (st.output));
 }
 
 void PatinaProcessor::runEngine (SpaceMode m, float inL, float inR, float& outL, float& outR)
@@ -229,7 +367,7 @@ void PatinaProcessor::resetEngine (SpaceMode m)
     }
 }
 
-void PatinaProcessor::processSpace (juce::AudioBuffer<float>& buffer, int numChannels)
+void PatinaProcessor::processSpace (float* left, float* right, int numSamples, bool stereo, float duck)
 {
     const auto requested = (SpaceMode) (int) pMode->load();
     if (requested != activeMode && fadeRemaining == 0)
@@ -239,14 +377,7 @@ void PatinaProcessor::processSpace (juce::AudioBuffer<float>& buffer, int numCha
         fadeRemaining = fadeLength;
     }
 
-    mixSmoothed.setTargetValue (pMix->load());
-    widthSmoothed.setTargetValue (pWidth->load());
-    const float duck = pDuck->load();
-
-    auto* left = buffer.getWritePointer (0);
-    auto* right = numChannels > 1 ? buffer.getWritePointer (1) : left;
-
-    for (int i = 0; i < buffer.getNumSamples(); ++i)
+    for (int i = 0; i < numSamples; ++i)
     {
         const float inL = left[i], inR = right[i];
 
@@ -281,7 +412,7 @@ void PatinaProcessor::processSpace (juce::AudioBuffer<float>& buffer, int numCha
         const float dryGain = std::cos (m * 0.5f * kPi);
         const float wetGain = std::sin (m * 0.5f * kPi) * duckGain;
 
-        if (numChannels > 1)
+        if (stereo)
         {
             left[i] = inL * dryGain + wetL * wetGain;
             right[i] = inR * dryGain + wetR * wetGain;
@@ -299,43 +430,79 @@ void PatinaProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
 
     const int numIn = getTotalNumInputChannels();
     const int numOut = getTotalNumOutputChannels();
+    const int numSamples = buffer.getNumSamples();
     for (int ch = numIn; ch < numOut; ++ch)
-        buffer.clear (ch, 0, buffer.getNumSamples());
+        buffer.clear (ch, 0, numSamples);
 
     const int numCh = std::min (numOut, buffer.getNumChannels());
-    if (numCh == 0 || buffer.getNumSamples() == 0)
+    if (numCh == 0 || numSamples == 0)
         return;
 
-    const auto position = (SatPosition) (int) pSatPos->load();
-    saturator.setParameters ((SatType) (int) pSatType->load(), pDrive->load(), pSatTone->load(), pSatBlend->load());
-    updateEngineParams (currentDelayMs());
+    double ppq = 0.0;
+    bool transportRunning = false;
+    if (auto* ph = getPlayHead())
+        if (auto pos = ph->getPosition())
+        {
+            if (auto bpm = pos->getBpm(); bpm.hasValue() && *bpm > 1.0)
+                lastBpm = *bpm;
+            if (auto p = pos->getPpqPosition(); p.hasValue() && pos->getIsPlaying())
+            {
+                ppq = *p;
+                transportRunning = true;
+            }
+        }
 
-    // The oversampler runs exactly once per block (Pre slot, or Post slot when
-    // Post is selected) so the reported latency is constant across positions.
-    if (position != SatPosition::Post)
-        saturator.process (buffer, position == SatPosition::Pre);
+    const Settings base = readSettings();
+    const auto position = (SatPosition) base.satPos;
+    const bool stereo = numCh > 1;
+    juce::dsp::AudioBlock<float> fullBlock (buffer.getArrayOfWritePointers(), (size_t) numCh, (size_t) numSamples);
 
-    processSpace (buffer, numCh);
-
-    if (position == SatPosition::Post)
-        saturator.process (buffer, true);
-
-    outputSmoothed.setTargetValue (dbToGain (pOutput->load()));
-    if (outputSmoothed.isSmoothing())
+    // Control-rate loop: the LFO and all parameter-derived coefficients update every 32 samples.
+    for (int start = 0; start < numSamples; start += kControlChunk)
     {
-        for (int i = 0; i < buffer.getNumSamples(); ++i)
+        const int len = std::min (kControlChunk, numSamples - start);
+
+        Settings st = base;
+        float delayMs = delayMsFor (st);
+        const float lfoValue = lfoValueForChunk (start, len, ppq, transportRunning);
+        applyModulation (st, delayMs, lfoValue);
+        applySettings (st, delayMs);
+
+        auto chunk = fullBlock.getSubBlock ((size_t) start, (size_t) len);
+
+        // The oversampler runs exactly once per chunk (Pre slot, or Post slot when
+        // Post is selected) so the reported latency is constant across positions.
+        if (position != SatPosition::Post)
+            saturator.process (chunk, position == SatPosition::Pre);
+
+        float* left = buffer.getWritePointer (0, start);
+        float* right = stereo ? buffer.getWritePointer (1, start) : left;
+        processSpace (left, right, len, stereo, st.duck);
+
+        if (position == SatPosition::Post)
+            saturator.process (chunk, true);
+
+        for (int i = 0; i < len; ++i)
         {
             const float g = outputSmoothed.getNextValue();
-            for (int ch = 0; ch < numCh; ++ch)
-                buffer.getWritePointer (ch)[i] *= g;
+            left[i] *= g;
+            if (stereo)
+                right[i] *= g;
         }
+
+        lfoValueUI.store (lfoValue, std::memory_order_relaxed);
     }
-    else
+
+    lfoPhaseUI.store (lfo.getPhase(), std::memory_order_relaxed);
+
+    float level = 0.0f, peak = 0.0f;
+    for (int ch = 0; ch < numCh; ++ch)
     {
-        buffer.applyGain (0, 0, buffer.getNumSamples(), outputSmoothed.getTargetValue());
-        if (numCh > 1)
-            buffer.applyGain (1, 0, buffer.getNumSamples(), outputSmoothed.getTargetValue());
+        level = std::max (level, buffer.getRMSLevel (ch, 0, numSamples));
+        peak = std::max (peak, buffer.getMagnitude (ch, 0, numSamples));
     }
+    outputLevelUI.store (level, std::memory_order_relaxed);
+    outputPeakUI.store (std::max (peak, outputPeakUI.load (std::memory_order_relaxed)), std::memory_order_relaxed);
 }
 
 int PatinaProcessor::getNumPrograms() { return (int) std::size (kPresets); }

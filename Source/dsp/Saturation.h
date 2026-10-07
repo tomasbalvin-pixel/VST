@@ -152,9 +152,9 @@ public:
         }
     }
 
-    void process (juce::AudioBuffer<float>& buffer, bool active)
+    /** Processes a (sub-)block no longer than the maxBlock given to prepare(). */
+    void process (juce::dsp::AudioBlock<float> block, bool active)
     {
-        juce::dsp::AudioBlock<float> block (buffer);
         auto up = oversampler->processSamplesUp (block);
 
         const int n = (int) up.getNumSamples();
@@ -191,11 +191,11 @@ public:
 
         if (active)
         {
-            for (int ch = 0; ch < (int) buffer.getNumChannels(); ++ch)
+            for (int ch = 0; ch < (int) block.getNumChannels(); ++ch)
             {
-                auto* d = buffer.getWritePointer (ch);
+                auto* d = block.getChannelPointer ((size_t) ch);
                 auto& dc = dcBlockers[(size_t) ch];
-                for (int i = 0; i < buffer.getNumSamples(); ++i)
+                for (int i = 0; i < (int) block.getNumSamples(); ++i)
                     d[i] = dc.process (d[i]);
             }
         }

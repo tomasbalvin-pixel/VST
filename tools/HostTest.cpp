@@ -44,6 +44,14 @@ void setParamNormalised (AudioPluginInstance& p, const String& name, float v)
     check (false, "parameter not found: " + name);
 }
 
+// Explicit reset: program changes through a hosted VST3 are applied asynchronously,
+// so they are not a reliable way to put the plugin in a known state between tests.
+void loadDefaults (AudioPluginInstance& p)
+{
+    for (auto* param : p.getParameters())
+        param->setValueNotifyingHost (param->getDefaultValue());
+}
+
 struct Stats { float peak = 0, tailRms = 0, earlyRms = 0; bool finite = true; double cpuRatio = 0; };
 
 Stats render (AudioPluginInstance& p, int seconds, const File& wav, bool burst)
@@ -136,7 +144,7 @@ int main (int argc, char** argv)
     const char* modes[] = { "Tape", "BBD", "Spring", "Plate" };
     for (int m = 0; m < 4; ++m)
     {
-        plugin->setCurrentProgram (0);
+        loadDefaults (*plugin);
         setParamNormalised (*plugin, "Mode", (float) m / 3.0f);
         setParamNormalised (*plugin, "Mix", 1.0f);
         setParam (*plugin, "Drive", 0.0f);
@@ -154,7 +162,7 @@ int main (int argc, char** argv)
     // --- Wet level vs input on sustained pink-ish noise (mix 100%, drive 0)
     for (int m = 0; m < 4; ++m)
     {
-        plugin->setCurrentProgram (0);
+        loadDefaults (*plugin);
         setParamNormalised (*plugin, "Mode", (float) m / 3.0f);
         setParamNormalised (*plugin, "Mix", 1.0f);
         setParam (*plugin, "Drive", 0.0f);
@@ -200,7 +208,7 @@ int main (int argc, char** argv)
     for (int m = 0; m < 4; ++m)
         for (int s = 0; s < 4; ++s)
         {
-            plugin->setCurrentProgram (0);
+            loadDefaults (*plugin);
             setParamNormalised (*plugin, "Mode", (float) m / 3.0f);
             setParamNormalised (*plugin, "Saturation", (float) s / 3.0f);
             setParamNormalised (*plugin, "Sat Position", 0.5f);
@@ -214,12 +222,63 @@ int main (int argc, char** argv)
                    String ("stress ") + modes[m] + " + " + sats[s] + ": peak " + String (st.peak, 3));
         }
 
+    // --- LFO: every shape, three slots at full depth on the most sensitive targets
+    const char* shapes[] = { "Sine", "Triangle", "Square", "Saw", "S&H", "Drift" };
+    for (int m = 0; m < 4; ++m)
+        for (int sh = 0; sh < 6; ++sh)
+        {
+            loadDefaults (*plugin);
+            setParamNormalised (*plugin, "Mode", (float) m / 3.0f);
+            setParamNormalised (*plugin, "Mix", 1.0f);
+            setParamNormalised (*plugin, "Feedback", 0.9f);
+            setParamNormalised (*plugin, "Sat Position", 0.5f);
+            setParamNormalised (*plugin, "LFO Shape", (float) sh / 5.0f);
+            setParam (*plugin, "LFO Rate", 7.0f);
+            setParamNormalised (*plugin, "LFO Target 1", 1.0f / 11.0f);  // Time
+            setParamNormalised (*plugin, "LFO Depth 1", 1.0f);
+            setParamNormalised (*plugin, "LFO Target 2", 2.0f / 11.0f);  // Feedback
+            setParamNormalised (*plugin, "LFO Depth 2", 1.0f);
+            setParamNormalised (*plugin, "LFO Target 3", 9.0f / 11.0f);  // Drive
+            setParamNormalised (*plugin, "LFO Depth 3", 0.0f);           // -100%
+            auto st = render (*plugin, 6, outDir.getChildFile ("lfo.wav"), true);
+            check (st.finite && st.peak < 4.0f && st.peak > 0.01f,
+                   String ("lfo ") + modes[m] + " + " + shapes[sh] + ": peak " + String (st.peak, 3));
+        }
+
+    // --- LFO actually modulates: Mix swept by a slow square must change the output level over time
+    {
+        loadDefaults (*plugin);
+        setParamNormalised (*plugin, "Mix", 0.5f);
+        setParamNormalised (*plugin, "LFO Shape", 2.0f / 5.0f);
+        setParam (*plugin, "LFO Rate", 1.0f);
+        setParamNormalised (*plugin, "LFO Target 1", 8.0f / 11.0f); // Mix
+        setParamNormalised (*plugin, "LFO Depth 1", 1.0f);
+        plugin->reset();
+        AudioBuffer<float> block (2, kBlock);
+        MidiBuffer midi;
+        float minRms = 1e9f, maxRms = 0.0f;
+        for (int b = 0; b < (int) (3 * kRate / kBlock); ++b)
+        {
+            for (int i = 0; i < kBlock; ++i)
+                for (int ch = 0; ch < 2; ++ch)
+                    block.setSample (ch, i, 0.3f * std::sin (0.05f * (float) (b * kBlock + i)));
+            plugin->processBlock (block, midi);
+            if (b > 40)
+            {
+                const float r = block.getRMSLevel (0, 0, kBlock);
+                minRms = std::min (minRms, r);
+                maxRms = std::max (maxRms, r);
+            }
+        }
+        check (maxRms > minRms * 1.5f, "LFO on Mix modulates level: rms " + String (minRms, 3) + " .. " + String (maxRms, 3));
+    }
+
     // --- State round trip
     {
         plugin->setCurrentProgram (4);
         MemoryBlock state;
         plugin->getStateInformation (state);
-        plugin->setCurrentProgram (0);
+        loadDefaults (*plugin);
         plugin->setStateInformation (state.getData(), (int) state.getSize());
         MemoryBlock state2;
         plugin->getStateInformation (state2);

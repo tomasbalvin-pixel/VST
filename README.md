@@ -1,6 +1,8 @@
 # Patina
 
-A VST3 / AU effect that combines four vintage "space" machines with an oversampled saturation stage. It's built for Ableton Live and runs in any VST3 or AU host.
+A VST3 / AU effect that combines four vintage "space" machines with an oversampled saturation stage and an assignable LFO. It's built for Ableton Live and runs in any VST3 or AU host. The panel is styled after Soviet laboratory test equipment, with Cyrillic legends and English sub-legends.
+
+![Patina ЭХ-1](docs/screenshot.png)
 
 | Space mode | What it models | What **Age** does |
 |---|---|---|
@@ -33,8 +35,21 @@ Pre and Post run at 4x oversampling. Latency stays fixed at about 60 samples in 
 | Space | Pre-Delay (0–300 ms), Decay (0.3–12 s) | Spring/Plate. |
 | Space | Tone, Age, Width (0–150 %) | Shared by all modes. |
 | Output | Duck, Mix, Output | Duck pulls the wet signal down while the input plays. Mix is equal-power. |
+| LFO | Shape, Rate (0.02–20 Hz) or Sync + Division (1/32 to 8 bars), three Target/Depth slots | See below. |
 
-Switching modes crossfades over 40 ms, so you can automate it. There are eight factory presets, which Live lists in the device's preset menu.
+## LFO (НЧ генератор)
+
+One LFO with six shapes: Sine, Triangle, Square, Saw, Sample & Hold and Drift (smoothed random). It feeds three assignment slots. Each slot picks a target and a bipolar depth:
+
+- **Targets:** Time, Feedback, Pre-Delay, Decay, Tone, Age, Width, Mix, Drive, Sat Tone, Sat Blend.
+- **Depth:** at ±100 % the LFO sweeps the target across its whole range around the knob's position. Slots that share a target add together.
+- **Sync:** when on and Live's transport is running, the LFO locks to the song position, so it lands the same way on every playback.
+
+Modulated knobs show a red arc for the modulation range and a moving dot for the live value.
+
+Time modulation passes through the echo engine's own motor glide. Slow rates give pitch-bending tape warble; fast rates get smoothed out, as they would on a real machine.
+
+Switching modes crossfades over 40 ms, so you can automate it. There are eleven factory programs: three of them use the LFO (Seasick Tape, Breathing Plate, Stuttering Spring). Live does not show VST3 programs in its menus, so save your own sounds with Live's device preset button.
 
 ## Getting the plugin
 
@@ -76,12 +91,13 @@ It writes WAV renders to `./renders/`. CI also runs [pluginval](https://github.c
 
 ```
 Source/
-  PluginProcessor.*      parameters, routing, tempo sync, mode crossfade, presets
-  PluginEditor.*         UI and look-and-feel
+  PluginProcessor.*      parameters, routing, tempo sync, mode crossfade, LFO routing, presets
+  PluginEditor.*         Soviet test-equipment UI: knobs, selectors, CRT, meter, lamps
   dsp/Primitives.h       delay line (Hermite), SVF, one-poles, noise, drift
   dsp/Saturation.h       shapers and the oversampled block saturator
   dsp/EchoEngine.h       Tape and BBD echoes
   dsp/SpringEngine.h     dispersive spring tank
   dsp/PlateEngine.h      Dattorro plate
+  dsp/Lfo.h              LFO shapes and transport-locked phase
 tools/HostTest.cpp       headless validation host
 ```

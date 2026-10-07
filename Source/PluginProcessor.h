@@ -2,6 +2,7 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 #include "dsp/EchoEngine.h"
+#include "dsp/Lfo.h"
 #include "dsp/PlateEngine.h"
 #include "dsp/Saturation.h"
 #include "dsp/SpringEngine.h"
@@ -26,7 +27,18 @@ inline constexpr auto satPos    = "satpos";
 inline constexpr auto satTone   = "sattone";
 inline constexpr auto satBlend  = "satblend";
 inline constexpr auto output    = "output";
+inline constexpr auto lfoRate   = "lforate";
+inline constexpr auto lfoSync   = "lfosync";
+inline constexpr auto lfoDiv    = "lfodiv";
+inline constexpr auto lfoShape  = "lfoshape";
+inline constexpr const char* lfoTarget[] = { "lfotarget1", "lfotarget2", "lfotarget3" };
+inline constexpr const char* lfoDepth[]  = { "lfodepth1", "lfodepth2", "lfodepth3" };
+inline constexpr int numLfoSlots = 3;
 } // namespace ParamIDs
+
+/** Parameters the LFO can be routed to (index order matches the target choice parameter). */
+enum class ModTarget { Off = 0, Time, Feedback, PreDelay, Decay, Tone, Age, Width, Mix, Drive, SatTone, SatBlend, Count };
+inline constexpr int kNumModTargets = (int) ModTarget::Count;
 
 enum class SpaceMode { Tape = 0, BBD, Spring, Plate };
 enum class SatPosition { Pre = 0, Space, Post };
@@ -63,13 +75,35 @@ public:
 
     juce::AudioProcessorValueTreeState apvts;
 
-    static const juce::StringArray modeNames, satTypeNames, satPosNames, divisionNames;
+    static const juce::StringArray modeNames, satTypeNames, satPosNames, divisionNames,
+                                   lfoShapeNames, lfoDivisionNames, lfoTargetNames;
+
+    /** Parameter ID for each modulation target (nullptr for Off). */
+    static const char* modTargetParamID (int target);
+
+    // Read by the editor for metering and modulation display.
+    std::atomic<float> lfoValueUI { 0.0f }, lfoPhaseUI { 0.0f }, outputLevelUI { 0.0f };
+    std::atomic<float> outputPeakUI { 0.0f }; // max since the editor last reset it
+    std::array<std::atomic<float>, kNumModTargets> modOffsetUI {};
 
 private:
+    struct Settings
+    {
+        int mode = 0, satType = 0, satPos = 0, division = 8;
+        bool sync = false;
+        float time = 320, feedback = 0.4f, preDelay = 12, decay = 2.2f, tone = 0.55f, age = 0.3f, width = 1,
+              mix = 0.35f, duck = 0, drive = 6, satTone = 0.75f, satBlend = 1, output = 0;
+    };
+
+    static constexpr int kControlChunk = 32;
+
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
-    float currentDelayMs();
-    void updateEngineParams (float delayMs);
-    void processSpace (juce::AudioBuffer<float>& buffer, int numChannels);
+    Settings readSettings() const;
+    float delayMsFor (const Settings&) const;
+    float lfoValueForChunk (int chunkStart, int chunkLen, double ppqAtBlockStart, bool transportRunning);
+    void applyModulation (Settings&, float& delayMs, float lfoValue);
+    void applySettings (const Settings&, float delayMs);
+    void processSpace (float* left, float* right, int numSamples, bool stereo, float duck);
     void runEngine (SpaceMode m, float inL, float inR, float& outL, float& outR);
     void resetEngine (SpaceMode m);
 
@@ -78,6 +112,8 @@ private:
     patina::EchoEngine bbdEcho { patina::EchoEngine::Flavor::BBD };
     patina::SpringEngine spring;
     patina::PlateEngine plate;
+    patina::Lfo lfo;
+    std::array<juce::RangedAudioParameter*, kNumModTargets> targetParams {};
 
     SpaceMode activeMode = SpaceMode::Tape, fadingMode = SpaceMode::Tape;
     int fadeRemaining = 0, fadeLength = 1;
@@ -95,6 +131,9 @@ private:
     std::atomic<float>* pWidth {}; std::atomic<float>* pDuck {}; std::atomic<float>* pMix {};
     std::atomic<float>* pDrive {}; std::atomic<float>* pSatType {}; std::atomic<float>* pSatPos {};
     std::atomic<float>* pSatTone {}; std::atomic<float>* pSatBlend {}; std::atomic<float>* pOutput {};
+    std::atomic<float>* pLfoRate {}; std::atomic<float>* pLfoSync {}; std::atomic<float>* pLfoDiv {};
+    std::atomic<float>* pLfoShape {};
+    std::array<std::atomic<float>*, ParamIDs::numLfoSlots> pLfoTarget {}, pLfoDepth {};
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PatinaProcessor)
 };
