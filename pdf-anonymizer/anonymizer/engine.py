@@ -17,8 +17,8 @@ from dataclasses import dataclass, field
 
 import pymupdf
 
-from . import names, ocr
-from .detectors import CATEGORIES, DetectorConfig, Finding, detect
+from . import columns, names, ocr
+from .detectors import ALWAYS, CATEGORIES, DetectorConfig, Finding, detect, resolve_overlaps
 from .textutil import fold
 
 _WORD_FLAGS = pymupdf.TEXTFLAGS_WORDS
@@ -59,6 +59,7 @@ class PageData:
     word_spans: list       # (start, end) of each word in text
     findings: list = field(default_factory=list)
     word_owner: list = field(default_factory=list)  # finding index per word or None
+    column_findings: list = field(default_factory=list)
 
 
 @dataclass
@@ -224,8 +225,31 @@ def _needs_ocr(page, words) -> bool:
     return garbled > 0.3 * len(words)
 
 
+def _column_findings(page, pdata: PageData, rules, carried):
+    """Findings for every cell under the listed table headings."""
+    groups, carry = columns.column_groups(page, pdata.words, rules, carried)
+    found = []
+    for rule, cell in groups:
+        prefix = columns.label_prefix(rule)
+        value = " ".join(pdata.words[i][4] for i in cell)
+        key = f"COLUMN:{prefix}:{_normalise(value)}"
+        # One finding per run of words that are adjacent in reading order.
+        order = sorted(cell)
+        run = [order[0]]
+        for wi in order[1:] + [None]:
+            if wi is not None and wi == run[-1] + 1:
+                run.append(wi)
+                continue
+            found.append(Finding("COLUMN", pdata.word_spans[run[0]][0], pdata.word_spans[run[-1]][1],
+                                 key=key, meta={"label": prefix}))
+            if wi is not None:
+                run = [wi]
+    return found, carry
+
+
 def analyze_open_document(doc, path: str, cfg: DetectorConfig, warnings=(), log=None) -> DocumentAnalysis:
     result = DocumentAnalysis(path, warnings=list(warnings))
+    carried = []
     for i, page in enumerate(doc):
         pdata = _page_data(page, i + 1)
         if _needs_ocr(page, pdata.words):
@@ -242,6 +266,8 @@ def analyze_open_document(doc, path: str, cfg: DetectorConfig, warnings=(), log=
                 result.scanned_pages.append(i + 1)
         elif len(page.get_text("words", flags=_UNCLIPPED_FLAGS)) > len(pdata.words):
             result.warnings.append(f"Page {i + 1} contains text outside the visible page area.")
+        if cfg.columns and pdata.words:
+            pdata.column_findings, carried = _column_findings(page, pdata, cfg.columns, carried)
         result.pages.append(pdata)
 
     # Pass 1: direct detection.
@@ -249,6 +275,7 @@ def analyze_open_document(doc, path: str, cfg: DetectorConfig, warnings=(), log=
         p.findings = detect(p.text, cfg)
         for f in p.findings:
             f.key = _key_for(f, p.text)
+        p.findings = resolve_overlaps(p.column_findings + p.findings)
     # Pass 2: repeat with surnames found in pass 1, so "Novák" alone on page 5 is
     # caught after "Ing. Jan Novák" appeared on page 1.
     extra = _propagation_terms(result.pages)
@@ -259,6 +286,7 @@ def analyze_open_document(doc, path: str, cfg: DetectorConfig, warnings=(), log=
                 if f.category == "PERSON" and not f.key:
                     f.key = _known_key(f, p.text, extra)
                 f.key = _key_for(f, p.text)
+            p.findings = resolve_overlaps(p.column_findings + p.findings)
     for p in result.pages:
         _assign_words(p)
     return result
@@ -485,7 +513,7 @@ def anonymize(path: str, out_dir: str, stem: str, options: Options, pseudonyms: 
         labels = {}
         for p in analysis.pages:
             for fi, f in enumerate(p.findings):
-                labels[(p.number, fi)] = pseudonyms.label(f.category, f.key)
+                labels[(p.number, fi)] = pseudonyms.label(f.meta.get("label", f.category), f.key)
                 result.counts[f.category] += 1
         if not any(p.findings for p in analysis.pages) and not analysis.scanned_pages:
             result.warnings.append("No personal data was detected in this file. Check it, and add any "
@@ -556,7 +584,7 @@ def run_batch(paths, out_dir: str, options: Options, progress=None, cancelled=la
 
 def write_report(results, out_dir: str, options: Options) -> str:
     path = os.path.join(out_dir, "anonymization_report.csv")
-    cats = [c for c in CATEGORIES if c in options.detector.categories or c == "CUSTOM"]
+    cats = [c for c in CATEGORIES if c in options.detector.categories or c in ALWAYS]
     if options.remove_images:
         cats.append("IMAGE")
     with open(path, "w", newline="", encoding="utf-8-sig") as fh:

@@ -12,7 +12,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from . import APP_NAME, __version__, ocr, offline
-from .detectors import CATEGORIES, DetectorConfig
+from .detectors import ALWAYS, CATEGORIES, DetectorConfig
 from .engine import Options, analyze, collect_pdfs, run_batch
 
 
@@ -96,7 +96,7 @@ class App:
         nb.add(cat_tab, text="3. What to anonymise")
         self.cat_vars = {}
         for i, (cat, (label, default)) in enumerate(CATEGORIES.items()):
-            if cat == "CUSTOM":
+            if cat in ALWAYS:
                 continue
             v = tk.BooleanVar(value=default)
             self.cat_vars[cat] = v
@@ -123,6 +123,18 @@ class App:
         self.forms_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(terms_tab, text="Also match inflected forms (Novák → Nováka, Novákovi)",
                         variable=self.forms_var).grid(row=3, column=0, columnspan=2, sticky="w")
+
+        col_tab = ttk.Frame(nb, padding=8)
+        nb.add(col_tab, text="Table columns")
+        col_tab.columnconfigure(0, weight=1)
+        col_tab.rowconfigure(1, weight=1)
+        ttk.Label(col_tab, wraplength=680, justify="left", text=(
+            "Column headings whose whole column is anonymised, one per line, exactly as the heading "
+            "reads in the table (e.g. Rodné číslo, Pobočka, Plat). Every cell below the heading is "
+            "removed, on every page and in every file, including tables that continue onto the next "
+            "page. Works for ruled, borderless and scanned tables.")).grid(row=0, column=0, sticky="w")
+        self.columns_text = tk.Text(col_tab, height=6, width=40, undo=True)
+        self.columns_text.grid(row=1, column=0, sticky="nsew", pady=4)
 
         out_tab = ttk.Frame(nb, padding=8)
         nb.add(out_tab, text="Output options")
@@ -221,7 +233,8 @@ class App:
     def _options(self) -> Options:
         cats = {c for c, v in self.cat_vars.items() if v.get()} | {"CUSTOM"}
         det = DetectorConfig(categories=cats, custom_terms=self._lines(self.terms_text),
-                             allow_terms=self._lines(self.allow_text), match_word_forms=self.forms_var.get())
+                             allow_terms=self._lines(self.allow_text), match_word_forms=self.forms_var.get(),
+                             columns=self._lines(self.columns_text))
         return Options(detector=det, style=self.style_var.get(), remove_images=self.images_var.get(),
                        rename_files=self.rename_var.get(), write_pdf=self.pdf_var.get(),
                        write_text=self.txt_var.get())
@@ -358,6 +371,8 @@ class App:
         self.pdf_var.set(s.get("write_pdf", True))
         self.txt_var.set(s.get("write_text", True))
         self.forms_var.set(s.get("match_word_forms", True))
+        if s.get("columns"):
+            self.columns_text.insert("1.0", "\n".join(s["columns"]))
         if s.get("allow_terms"):
             self.allow_text.insert("1.0", "\n".join(s["allow_terms"]))
 
@@ -373,6 +388,7 @@ class App:
             "write_text": self.txt_var.get(),
             "match_word_forms": self.forms_var.get(),
             "allow_terms": self._lines(self.allow_text),
+            "columns": self._lines(self.columns_text),
         }
         try:
             os.makedirs(os.path.dirname(config_path()), exist_ok=True)

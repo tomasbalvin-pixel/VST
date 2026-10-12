@@ -7,7 +7,7 @@ import os
 import sys
 
 from . import APP_NAME, __version__
-from .detectors import CATEGORIES, DetectorConfig
+from .detectors import ALWAYS, CATEGORIES, DetectorConfig
 from .engine import Options, analyze, collect_pdfs, run_batch
 
 
@@ -24,8 +24,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("-o", "--output", help="output folder (required unless --preview)")
     p.add_argument("--terms", help="text file with terms to always anonymise, one per line")
     p.add_argument("--allow", help="text file with terms never to anonymise, one per line")
+    p.add_argument("--column", action="append", default=[], metavar="HEADING",
+                   help="anonymise every cell under this table column heading (repeatable)")
     p.add_argument("--categories", help="comma-separated categories (default: the standard set). "
-                   "Available: " + ", ".join(c for c in CATEGORIES if c != "CUSTOM"))
+                   "Available: " + ", ".join(c for c in CATEGORIES if c not in ALWAYS))
     p.add_argument("--exact", action="store_true", help="match custom terms exactly (no inflected forms)")
     p.add_argument("--style", choices=["label", "black"], default="label")
     p.add_argument("--remove-images", action="store_true")
@@ -39,7 +41,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     cfg = DetectorConfig(custom_terms=_read_list(args.terms), allow_terms=_read_list(args.allow),
-                         match_word_forms=not args.exact)
+                         match_word_forms=not args.exact, columns=args.column)
     if args.categories:
         cfg.categories = {c.strip().upper() for c in args.categories.split(",") if c.strip()}
         unknown = cfg.categories - set(CATEGORIES)

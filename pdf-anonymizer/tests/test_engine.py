@@ -196,3 +196,63 @@ def test_offline_guard_blocks_network():
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     out = subprocess.run([sys.executable, "-c", code], cwd=root, capture_output=True, text=True, timeout=60)
     assert "BLOCKED" in out.stdout, out.stdout + out.stderr
+
+
+def _employee_table(path, border=True, repeats=20):
+    rows = [("Jan Novák", "Brno", "Analytik"), ("Eva Svobodová", "Praha 4", "Vedoucí"),
+            ("Petr Malý", "Ostrava", "Technik")] * repeats
+    b = ' border="1" style="border-collapse:collapse"' if border else ""
+    body = "".join(f"<tr><td>{a}</td><td>{c}</td><td>{d}</td></tr>" for a, c, d in rows)
+    html = (f"<p>Seznam zaměstnanců</p><table{b}><tr><th>Jméno</th><th>Pobočka</th><th>Pozice</th></tr>"
+            f"{body}</table><p>Konec seznamu.</p>")
+    doc = pymupdf.open()
+    rect, story = pymupdf.paper_rect("a4"), pymupdf.Story(html)
+    writer = pymupdf.DocumentWriter(path)
+    more = True
+    while more:
+        dev = writer.begin_page(rect)
+        more, _ = story.place(rect + (50, 50, -50, -50))
+        story.draw(dev)
+        writer.end_page()
+    writer.close()
+    doc.close()
+    return path
+
+
+@pytest.mark.parametrize("border", [True, False])
+def test_whole_column_redaction(tmp_path, border):
+    src = _employee_table(str(tmp_path / "t.pdf"), border=border)
+    det = DetectorConfig(columns=["Pozice"])
+    [r] = run_batch([src], str(tmp_path / "out"), Options(detector=det))
+    out = pymupdf.open(r.output_pdf)
+    assert out.page_count == 2  # the table continues onto page 2
+    text = "".join(p.get_text() for p in out)
+    for v in ("Analytik", "Vedoucí", "Technik"):
+        assert v not in text
+    assert r.counts["COLUMN"] == 60
+    assert "Pozice" in text and "Pobočka" in text   # headings stay
+    assert "Ostrava" in text                        # other columns stay
+    assert "Konec seznamu." in text                 # text after the table stays
+    txt = open(r.output_text, encoding="utf-8").read()
+    assert "[POZICE_1]" in txt and "[POZICE_3]" in txt and "[POZICE_4]" not in txt
+
+
+def test_column_heading_in_running_text_is_ignored(tmp_path):
+    src = make_pdf(str(tmp_path / "x.pdf"), body="Pozice vedoucího oddělení bude obsazena interně.<br>Další text.")
+    [r] = run_batch([src], str(tmp_path / "out"), Options(detector=DetectorConfig(columns=["Pozice"])))
+    assert r.counts["COLUMN"] == 0
+    assert "Další text." in pymupdf.open(r.output_pdf)[0].get_text()
+
+
+@pytest.mark.skipif(not ocr.available(), reason="OCR language data not installed")
+def test_whole_column_redaction_on_scanned_table(tmp_path):
+    src = _employee_table(str(tmp_path / "t.pdf"))
+    scan = scan_of(src, str(tmp_path / "scan.pdf"))
+    [r] = run_batch([scan], str(tmp_path / "out"), Options(detector=DetectorConfig(columns=["Pozice"])))
+    assert r.ocr_pages == [1, 2]
+    assert r.counts["COLUMN"] == 60
+    out = pymupdf.open(r.output_pdf)
+    seen = "".join(ocr.page_text(p) for p in out)
+    for v in ("Analytik", "Vedoucí", "Technik"):
+        assert v not in seen
+    assert "Pozice" in seen and "Ostrava" in seen and "Konec seznamu." in seen

@@ -14,7 +14,7 @@ Download the installer from the latest successful run of the **PDF Anonymizer** 
 
 1. **Add files…** or **Add folder…** (subfolders are included).
 2. Choose an output folder. The default is `anonymized` next to the first file.
-3. Under *What to anonymise*, tick the categories you want. Under *Your terms*, list anything that must always go, such as client names, company names or project code names, and anything that is being removed wrongly.
+3. Under *What to anonymise*, tick the categories you want. Under *Your terms*, list anything that must always go, such as client names, company names or project code names, and anything that is being removed wrongly. Under *Table columns*, list column headings whose whole column must go (see below).
 4. Click **Preview findings…** to see every detection before anything is written. Select false positives and click *Never anonymise selected*.
 5. Click **Anonymise**.
 
@@ -27,6 +27,14 @@ For each input, the output folder receives:
 | `anonymization_report.csv` | Counts per category and status (`OK`, `CHECK`, `FAILED`) per file. It contains no original values. |
 
 Output files are renamed to `document_001…` by default, because file names often contain names. The log window and the preview show original values on screen only; they are never written to disk. No key that maps labels back to real values is created.
+
+## Whole table columns
+
+Under *Table columns*, enter a column heading exactly as it appears in the table, one per line, for example `Rodné číslo`, `Pobočka` or `Plat`. Every cell below that heading is redacted, whatever it contains, on every page and in every file of the batch. The heading itself stays, so the table remains readable. Each column gets its own consistent labels (`POBOCKA_1`, `POBOCKA_2` …), so equal values stay recognisable as equal.
+
+The column is located from the position of the words, so ruled tables, borderless tables and scanned tables all work. A table that continues onto the next page is followed even when the heading is not repeated there. The column ends at the table's bottom rule, at a large gap, or at a line of running text. Headings are matched without regard to case or diacritics. A heading word that appears only in running text is ignored. Use *Preview findings* to confirm that the column was found: its cells are listed with category `COLUMN`.
+
+Command line: `--column "Rodné číslo" --column Pobočka`.
 
 ## What is detected
 
@@ -70,7 +78,7 @@ Requires Python 3.10+.
 ```
 pip install -r requirements-dev.txt
 python packaging/fetch_tessdata.py    # OCR language data (checksum verified)
-python -m pytest tests                # 46 tests
+python -m pytest tests                # 50 tests
 python -m anonymizer                  # run the GUI from source
 python packaging/build.py             # build dist/PDF Anonymizer (PyInstaller)
 ```
@@ -81,7 +89,7 @@ There is also a command-line mode, using the same executable or `python -m anony
 
 ```
 python -m anonymizer INPUT.pdf FOLDER/ -o OUTPUT/ [--terms names.txt] [--allow keep.txt]
-                     [--categories PERSON,EMAIL,...] [--style black] [--remove-images]
+                     [--column HEADING ...] [--categories PERSON,EMAIL,...] [--style black] [--remove-images]
                      [--keep-names] [--preview]
 ```
 

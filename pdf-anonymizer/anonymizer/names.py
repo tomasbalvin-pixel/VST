@@ -176,7 +176,9 @@ def _surname_forms(name: str) -> set:
 
 COMMON_SURNAMES = set().union(*(_surname_forms(s) for s in _COMMON_SURNAMES.split()))
 
-FEMALE_SURNAME_ENDINGS = ("ova", "ove", "ovou", "ska", "ske", "skou", "cka", "cke", "ckou")
+# -ová forms only: after removing diacritics "-cká" (Kopecká) is indistinguishable from
+# "-čka" (pobočka), so those surnames are recognised only next to a first name.
+FEMALE_SURNAME_ENDINGS = ("ova", "ove", "ovou")
 
 
 def first_name_status(token_folded: str):

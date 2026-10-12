@@ -31,11 +31,15 @@ CATEGORIES = {
     "IP": ("IP addresses", True),
     "DATE": ("All other dates", False),
     "CUSTOM": ("Your own terms (always applied)", True),
+    "COLUMN": ("Table columns you listed (always applied)", True),
 }
+
+# Categories that are not switched on and off by the user.
+ALWAYS = {"CUSTOM", "COLUMN"}
 
 # When findings overlap, the category listed first wins.
 PRIORITY = [
-    "CUSTOM", "EMAIL", "NATIONAL_ID", "BANK", "ID_DOC", "COMPANY_ID", "PHONE",
+    "COLUMN", "CUSTOM", "EMAIL", "NATIONAL_ID", "BANK", "ID_DOC", "COMPANY_ID", "PHONE",
     "BIRTH_DATE", "IP", "ADDRESS", "PERSON", "DATE",
 ]
 
@@ -56,6 +60,7 @@ class DetectorConfig:
     custom_terms: list = field(default_factory=list)
     allow_terms: list = field(default_factory=list)
     match_word_forms: bool = True
+    columns: list = field(default_factory=list)  # table column headings whose cells are all redacted
 
 
 UP = "A-ZÁÄČĎÉĚËÍĽĹŇÓÔÖŐŘŔŠŤÚŮÜŰÝŽĄĆĘŁŃŚŹŻÀÂÆÇÈÊÎÏŒÙÛŸ"
@@ -296,11 +301,21 @@ _LABEL_RE = re.compile(r"(?<![\w.])" + _label_alternatives() + r"\s*[:\t]\s*")
 # Table layouts have no colon: "Datum narození | 14. 7. 1985" comes out as a label at
 # the start of a line, followed by the value or with the value on the next line.
 _BARE_LABEL_RE = re.compile(r"^[\s\-–•*·>\d.)(]*" + _label_alternatives() + r"(?=\s|$)\s*")
+_ANY_LABEL_RE = re.compile(r"(?<![\w.])" + _label_alternatives() + r"(?![\w])")
 _LINE_PREFIX = re.compile(r"^[\s\-–•*·>\d.)(]*$")
 
 
-def _is_label_line(line_folded: str) -> bool:
-    return bool(_LABEL_RE.match(line_folded.lstrip()) or _BARE_LABEL_RE.match(line_folded))
+def _plausible_value(cat: str, value: str) -> bool:
+    """Without a colon, "Jméno  Pobočka  Pozice" is a table header, not a label and value."""
+    if cat == "EMAIL":
+        return "@" in value
+    if cat == "PERSON":
+        for tok in _TOKEN.findall(value):
+            k = _key(tok)
+            if k in names.TITLES or names.looks_like_surname(k) or names.first_name_status(k) is False:
+                return True
+        return False
+    return any(c.isdigit() for c in value)
 
 
 def _labelled_fields(text: str, folded: str) -> list:
@@ -316,13 +331,18 @@ def _labelled_fields(text: str, folded: str) -> list:
                 accepted = prefix.endswith((",", ";", "|"))
             if accepted:
                 hits.append(m)
+        bare = False
         if not hits:
             m = _BARE_LABEL_RE.match(line_f)
             if m:
                 rest = text[ls + m.end():le].strip()
-                # Accept a short value that does not read like a sentence ("Adresa je uvedena níže").
-                if not rest or (len(rest.split()) <= 8 and not rest[0].islower()):
+                # Accept a short value that does not read like a sentence ("Adresa je uvedena níže")
+                # and is not a table header row ("Jméno a příjmení  Rodné číslo  Pobočka").
+                if not rest or (len(rest.split()) <= 8 and not rest[0].islower()
+                                and not _ANY_LABEL_RE.search(folded[ls + m.end():le])
+                                and _plausible_value(m.lastgroup, rest)):
                     hits = [m]
+                    bare = True
         for i, m in enumerate(hits):
             cat = m.lastgroup
             vs = ls + m.end()
@@ -332,7 +352,8 @@ def _labelled_fields(text: str, folded: str) -> list:
             if not value.strip() and i + 1 == len(hits) and li + 1 < len(lines):
                 ns, ne = lines[li + 1]
                 nxt = text[ns:ne]
-                if 0 < len(nxt.split()) <= 6 and not _is_label_line(folded[ns:ne]):
+                if 0 < len(nxt.split()) <= 6 and not _ANY_LABEL_RE.search(folded[ns:ne]) \
+                        and (not bare or _plausible_value(cat, nxt)):
                     vs, ve, value = ns, ne, nxt
             stripped = value.strip(" ,;|")
             if not stripped or not re.search(r"\w", stripped):
@@ -554,7 +575,7 @@ def detect(text: str, cfg: DetectorConfig, extra_terms=None) -> list:
     raw.extend(_term_matches(folded, _prepare_terms(cfg.custom_terms), cfg.match_word_forms, "CUSTOM"))
 
     raw = [f for f in (_apply_allowlist(f, text, folded, cfg.allow_terms) for f in raw) if f]
-    return _resolve_overlaps(raw)
+    return resolve_overlaps(raw)
 
 
 def _apply_allowlist(f: Finding, text: str, folded: str, allow_terms) -> Finding | None:
@@ -578,7 +599,7 @@ def _apply_allowlist(f: Finding, text: str, folded: str, allow_terms) -> Finding
     return f
 
 
-def _resolve_overlaps(findings: list) -> list:
+def resolve_overlaps(findings: list) -> list:
     rank = {c: i for i, c in enumerate(PRIORITY)}
     findings.sort(key=lambda f: (rank.get(f.category, 99), -(f.end - f.start), f.start))
     taken: list = []
