@@ -1,0 +1,122 @@
+name: PDF Anonymizer
+
+on:
+  push:
+    paths:
+      - "pdf-anonymizer/**"
+      - ".github/workflows/pdf-anonymizer.yml"
+    tags:
+      - "pdf-anonymizer-v*"
+  pull_request:
+    paths:
+      - "pdf-anonymizer/**"
+      - ".github/workflows/pdf-anonymizer.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    working-directory: pdf-anonymizer
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-dev.txt
+      - run: python -m pytest -q tests
+
+  build:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            os: windows-latest
+          - name: macOS
+            os: macos-14
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Tests
+        run: python -m pytest -q tests
+      - name: GUI smoke test
+        shell: bash
+        run: |
+          python -c "
+          import tkinter as tk
+          from anonymizer import offline; offline.enforce()
+          from anonymizer.gui import App
+          root = tk.Tk(); App(root); root.update(); root.destroy(); print('GUI OK')
+          "
+      - name: Version
+        id: version
+        shell: bash
+        run: echo "version=$(python -c 'import anonymizer; print(anonymizer.__version__)')" >> "$GITHUB_OUTPUT"
+      - name: Build application
+        run: python packaging/build.py
+      - name: Smoke-test built application
+        shell: bash
+        run: |
+          python packaging/make_smoke_pdf.py smoke.pdf
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            pwsh -Command "\$p = Start-Process -FilePath 'dist/PDF Anonymizer/PDF Anonymizer.exe' -ArgumentList 'smoke.pdf','-o','smoke_out' -Wait -PassThru; exit \$p.ExitCode"
+          else
+            "dist/PDF Anonymizer.app/Contents/MacOS/PDF Anonymizer" smoke.pdf -o smoke_out
+          fi
+          python packaging/check_smoke_output.py smoke_out
+
+      - name: Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress; }
+          & $iscc "/DAppVersion=${{ steps.version.outputs.version }}" packaging\windows\installer.iss
+          Compress-Archive -Path "dist\PDF Anonymizer" -DestinationPath "dist\PDF-Anonymizer-${{ steps.version.outputs.version }}-Windows-portable.zip"
+      - name: macOS disk image
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p dmg && cp -R "dist/PDF Anonymizer.app" dmg/ && ln -s /Applications dmg/Applications
+          hdiutil create -volname "PDF Anonymizer" -srcfolder dmg -ov -format UDZO \
+            "dist/PDF-Anonymizer-${{ steps.version.outputs.version }}-macOS.dmg"
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: PDF-Anonymizer-${{ matrix.name }}
+          path: |
+            pdf-anonymizer/dist/*.exe
+            pdf-anonymizer/dist/*.zip
+            pdf-anonymizer/dist/*.dmg
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/pdf-anonymizer-v')
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Publish release
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" artifacts/* --repo "$GITHUB_REPOSITORY" \
+            --title "PDF Anonymizer ${GITHUB_REF_NAME#pdf-anonymizer-v}" \
+            --notes "Offline PDF anonymizer. Windows: run the Setup .exe (no admin rights needed). macOS: open the .dmg and drag the app to Applications."

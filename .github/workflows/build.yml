@@ -2,7 +2,13 @@ name: Build
 
 on:
   push:
+    paths-ignore:
+      - "pdf-anonymizer/**"
+      - ".github/workflows/pdf-anonymizer.yml"
   pull_request:
+    paths-ignore:
+      - "pdf-anonymizer/**"
+      - ".github/workflows/pdf-anonymizer.yml"
   workflow_dispatch:
 
 jobs:
