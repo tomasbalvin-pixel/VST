@@ -2,6 +2,8 @@ name: PDF Anonymizer
 
 on:
   push:
+    branches:
+      - "**"
     paths:
       - "pdf-anonymizer/**"
       - ".github/workflows/pdf-anonymizer.yml"
