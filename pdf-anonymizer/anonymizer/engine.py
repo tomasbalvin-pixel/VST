@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 
 import pymupdf
 
-from . import names
+from . import names, ocr
 from .detectors import CATEGORIES, DetectorConfig, Finding, detect
 from .textutil import fold
 
@@ -66,7 +66,8 @@ class DocumentAnalysis:
     path: str
     pages: list = field(default_factory=list)
     warnings: list = field(default_factory=list)
-    scanned_pages: list = field(default_factory=list)  # pages with images but no text layer
+    scanned_pages: list = field(default_factory=list)  # pages with images but no readable text
+    ocr_pages: list = field(default_factory=list)      # pages read with OCR
     error: str | None = None
 
     def items(self):
@@ -86,6 +87,7 @@ class DocumentResult:
     warnings: list = field(default_factory=list)
     # Detected values still found in the output. Shown on screen, never written to disk.
     residues: list = field(default_factory=list)
+    ocr_pages: list = field(default_factory=list)
     error: str | None = None
 
     @property
@@ -142,8 +144,8 @@ def _redaction_boxes(page, words):
     return cuts, boxes
 
 
-def _page_data(page, number: int) -> PageData:
-    words = page.get_text("words", flags=_WORD_FLAGS)
+def _page_data(page, number: int, ocr_words=None) -> PageData:
+    words = page.get_text("words", flags=_WORD_FLAGS) if ocr_words is None else ocr_words
     parts, spans, pos = [], [], 0
     prev_line = None
     for w in words:
@@ -156,7 +158,11 @@ def _page_data(page, number: int) -> PageData:
         parts.append(w[4])
         pos += len(w[4])
         prev_line = line_id
-    cuts, boxes = _redaction_boxes(page, words) if words else ([], [])
+    if ocr_words is not None:
+        # Full word boxes: the redaction must blank the image pixels of each word.
+        cuts = boxes = [pymupdf.Rect(w[:4]) for w in words]
+    else:
+        cuts, boxes = _redaction_boxes(page, words) if words else ([], [])
     return PageData(number, words, cuts, boxes, "".join(parts), spans)
 
 
@@ -205,15 +211,38 @@ def _same_word(word: str, term: str) -> bool:
     return len(stem) >= 3 and word.startswith(stem) and len(word) - len(stem) <= 4
 
 
-def analyze_open_document(doc, path: str, cfg: DetectorConfig, warnings=()) -> DocumentAnalysis:
+def _needs_ocr(page, words) -> bool:
+    """Scanned page (image, little or no text) or a text layer that does not decode."""
+    images = page.get_image_info()
+    if not words:
+        return bool(images)
+    page_area = abs(page.rect)
+    if len(words) < 10 and any(abs(pymupdf.Rect(i["bbox"]) & page.rect) > 0.5 * page_area for i in images):
+        return True
+    # Fonts without a Unicode mapping extract as U+FFFD or control characters.
+    garbled = sum(1 for w in words if "\ufffd" in w[4] or not any(c.isalnum() for c in w[4]))
+    return garbled > 0.3 * len(words)
+
+
+def analyze_open_document(doc, path: str, cfg: DetectorConfig, warnings=(), log=None) -> DocumentAnalysis:
     result = DocumentAnalysis(path, warnings=list(warnings))
     for i, page in enumerate(doc):
-        result.pages.append(_page_data(page, i + 1))
-        if not result.pages[-1].words:
-            if page.get_images() or page.get_image_info():
+        pdata = _page_data(page, i + 1)
+        if _needs_ocr(page, pdata.words):
+            if ocr.available():
+                if log:
+                    log(f"    reading page {i + 1}/{doc.page_count} with OCR")
+                try:
+                    pdata = _page_data(page, i + 1, ocr_words=ocr.page_words(page, _WORD_FLAGS))
+                    result.ocr_pages.append(i + 1)
+                except Exception as exc:  # noqa: BLE001 - reported to the user
+                    result.warnings.append(f"Page {i + 1}: OCR failed ({exc}).")
+                    result.scanned_pages.append(i + 1)
+            else:
                 result.scanned_pages.append(i + 1)
-        elif len(page.get_text("words", flags=_UNCLIPPED_FLAGS)) > len(result.pages[-1].words):
+        elif len(page.get_text("words", flags=_UNCLIPPED_FLAGS)) > len(pdata.words):
             result.warnings.append(f"Page {i + 1} contains text outside the visible page area.")
+        result.pages.append(pdata)
 
     # Pass 1: direct detection.
     for p in result.pages:
@@ -260,13 +289,13 @@ def open_pdf(path: str):
     return doc, warnings
 
 
-def analyze(path: str, cfg: DetectorConfig) -> DocumentAnalysis:
+def analyze(path: str, cfg: DetectorConfig, log=None) -> DocumentAnalysis:
     try:
         doc, warnings = open_pdf(path)
     except Exception as exc:  # noqa: BLE001 - reported to the user
         return DocumentAnalysis(path, error=str(exc))
     try:
-        result = analyze_open_document(doc, path, cfg, warnings)
+        result = analyze_open_document(doc, path, cfg, warnings, log)
         result.warnings.extend(_scan_warnings(result.scanned_pages, removed=False))
         return result
     finally:
@@ -280,8 +309,8 @@ def _scan_warnings(pages, removed: bool) -> list:
     if removed:
         return [f"Page(s) {listed} had no text layer (scanned images); the images were removed, "
                 "so these pages are blank."]
-    return [f"Page(s) {listed} have no text layer (scanned images). Their content cannot be read "
-            "or redacted; enable 'Remove all images' or check them manually."]
+    return [f"Page(s) {listed} have no readable text (scanned images) and OCR is not available. "
+            "Their content cannot be read or redacted; enable 'Remove all images' or check them manually."]
 
 
 # --------------------------------------------------------------------------- #
@@ -404,13 +433,20 @@ def _sanitise(doc) -> None:
 
 
 def _verify(path: str, analysis: DocumentAnalysis) -> list:
-    """Re-read the written file and report detected values that are still present."""
+    """Re-read the written file and report detected values that are still present.
+
+    Pages that were read with OCR are OCR'd again, so the check covers what is
+    visible in the page image, not only the text layer.
+    """
     residues = []
     with pymupdf.open(path) as out:
         for p in analysis.pages:
             if p.number > out.page_count or not p.findings:
                 continue
-            page_text = out[p.number - 1].get_text("text")
+            page = out[p.number - 1]
+            page_text = page.get_text("text")
+            if p.number in analysis.ocr_pages:
+                page_text += "\n" + ocr.page_text(page)
             words = {fold(w) for w in re.findall(r"\w+", page_text)}
             compact = _normalise(page_text)
             for f in p.findings:
@@ -427,7 +463,8 @@ def _verify(path: str, analysis: DocumentAnalysis) -> list:
     return residues
 
 
-def anonymize(path: str, out_dir: str, stem: str, options: Options, pseudonyms: Pseudonyms) -> DocumentResult:
+def anonymize(path: str, out_dir: str, stem: str, options: Options, pseudonyms: Pseudonyms,
+              log=None) -> DocumentResult:
     result = DocumentResult(path)
     src = os.path.normcase(os.path.abspath(path))
     while src in {os.path.normcase(os.path.abspath(os.path.join(out_dir, stem + ext))) for ext in (".pdf", ".txt")}:
@@ -438,8 +475,9 @@ def anonymize(path: str, out_dir: str, stem: str, options: Options, pseudonyms: 
         result.error = str(exc).replace(path, "(input file)")
         return result
     try:
-        analysis = analyze_open_document(doc, path, options.detector, warnings)
+        analysis = analyze_open_document(doc, path, options.detector, warnings, log)
         result.pages = len(analysis.pages)
+        result.ocr_pages = analysis.ocr_pages
         result.warnings.extend(analysis.warnings)
         result.warnings.extend(_scan_warnings(analysis.scanned_pages,
                                               removed=options.remove_images and options.write_pdf))
@@ -449,6 +487,9 @@ def anonymize(path: str, out_dir: str, stem: str, options: Options, pseudonyms: 
             for fi, f in enumerate(p.findings):
                 labels[(p.number, fi)] = pseudonyms.label(f.category, f.key)
                 result.counts[f.category] += 1
+        if not any(p.findings for p in analysis.pages) and not analysis.scanned_pages:
+            result.warnings.append("No personal data was detected in this file. Check it, and add any "
+                                   "names it contains under 'Your terms'.")
 
         if options.write_text:
             result.output_text = os.path.join(out_dir, stem + ".txt")
@@ -496,7 +537,7 @@ def output_stems(paths, rename: bool) -> list:
     return stems
 
 
-def run_batch(paths, out_dir: str, options: Options, progress=None, cancelled=lambda: False) -> list:
+def run_batch(paths, out_dir: str, options: Options, progress=None, cancelled=lambda: False, log=None) -> list:
     """Anonymise ``paths`` into ``out_dir`` and write a report without any original values."""
     os.makedirs(out_dir, exist_ok=True)
     pseudonyms = Pseudonyms()
@@ -506,7 +547,7 @@ def run_batch(paths, out_dir: str, options: Options, progress=None, cancelled=la
             break
         if progress:
             progress(i, len(paths), path)
-        results.append(anonymize(path, out_dir, stem, options, pseudonyms))
+        results.append(anonymize(path, out_dir, stem, options, pseudonyms, log))
     if progress:
         progress(len(results), len(paths), None)
     write_report(results, out_dir, options)

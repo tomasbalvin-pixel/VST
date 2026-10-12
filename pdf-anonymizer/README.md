@@ -32,7 +32,7 @@ Output files are renamed to `document_001…` by default, because file names oft
 
 | Category | Method |
 |---|---|
-| Personal names | About 530 common Czech, Slovak, English, German and Polish first names, with Czech declined forms (Tomáše, Tomášovi). Titles and salutations (Ing., MUDr., pan, paní, Mr., Dear). Czech female surnames ending in -ová. Labelled fields (Jméno:, Klient:, Name:). A surname found once is removed everywhere else in the same document. |
+| Personal names | About 530 common Czech, Slovak, English, German and Polish first names, with Czech declined forms (Tomáše, Tomášovi). Titles and salutations (Ing., MUDr., pan, paní, Mr., Dear). Czech female surnames ending in -ová. Labelled fields, with or without a colon, including table layouts where the value sits in the next cell (Jméno:, Jméno a příjmení, Klient:, Name:). A surname found once is removed everywhere else in the same document. |
 | E-mail, phone | Pattern matching: international, Czech 3-3-3 and North American formats. |
 | Addresses | Czech street + number + PSČ + city, "Vodičkova 699/30", English and German street formats, UK postcodes, and labelled fields (Adresa:, Bydliště:, Address:). |
 | Dates of birth | Labelled (Datum narození:, DOB:) or introduced by *nar.*, *born*. Other dates are optional and off by default. |
@@ -46,6 +46,7 @@ Output files are renamed to `document_001…` by default, because file names oft
 ## How the PDF is cleaned
 
 - Form-field values and comments are first flattened into the page, so they are scanned like normal text.
+- Scanned pages, and pages whose text layer does not decode, are read with OCR. The program uses the Tesseract engine built into MuPDF, with Czech, Slovak, English and German language data bundled in the installer, so this also runs offline. Allow roughly 2–3 seconds per scanned page. On these pages the image pixels under each finding are blanked, and the output page is read again with OCR to confirm nothing is still legible.
 - Each finding is removed from the page content with MuPDF's redaction. The characters are deleted, and image pixels under the box are blanked, not just covered.
 - Metadata (author, title, XMP), bookmarks, attachments, embedded files, JavaScript, links, form fields, annotations and thumbnails are removed.
 - The file is rewritten from scratch with garbage collection, so no earlier version of a page survives inside it.
@@ -56,7 +57,8 @@ Output files are renamed to `document_001…` by default, because file names oft
 
 These limits matter for how far you can trust the output.
 
-- **Scanned PDFs without a text layer cannot be read.** The program has no OCR. Such pages are reported as `CHECK`. Either run OCR first (for example *Adobe Acrobat → Scan & OCR*), or enable *Remove all images*, which blanks those pages. Scans that already have an OCR text layer are handled, and the image under each finding is blanked too.
+- **OCR is only as good as the scan.** Handwriting, stamps, very low resolution and skewed or rotated pages may be read wrongly, and anything misread cannot be detected. Check scanned outputs especially carefully. If a page cannot be read at all, the file is marked `CHECK`. *Remove all images* blanks such pages completely.
+- A file in which nothing at all is detected is marked `CHECK`, because that is unusual for a document about people.
 - **Detection is rule-based, not a language model.** It is predictable and fully offline, but it misses some data. It will not catch a name that is not in its lists, has no title or label, and appears in running text. It cannot judge indirect identifiers like "the only female engineer in the Brno office". Use the preview, put known names into *Your terms*, and spot-check results before you share anything. Over-redaction is deliberate: when in doubt, it removes.
 - Handwritten signatures drawn as vector graphics are not detected. Use *Remove all images* for scanned signatures.
 - Password-protected PDFs must be unlocked first.
@@ -67,7 +69,8 @@ Requires Python 3.10+.
 
 ```
 pip install -r requirements-dev.txt
-python -m pytest tests                # 44 tests
+python packaging/fetch_tessdata.py    # OCR language data (checksum verified)
+python -m pytest tests                # 46 tests
 python -m anonymizer                  # run the GUI from source
 python packaging/build.py             # build dist/PDF Anonymizer (PyInstaller)
 ```

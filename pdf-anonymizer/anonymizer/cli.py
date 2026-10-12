@@ -56,7 +56,7 @@ def main(argv=None) -> int:
 
     if args.preview:
         for f in files:
-            a = analyze(f, cfg)
+            a = analyze(f, cfg, log=lambda m: print(m, file=sys.stderr))
             print(f"== {f}")
             if a.error:
                 print(f"   error: {a.error}")
@@ -72,9 +72,12 @@ def main(argv=None) -> int:
     opts = Options(detector=cfg, style=args.style, remove_images=args.remove_images,
                    rename_files=not args.keep_names, write_pdf=not args.no_pdf, write_text=not args.no_text)
     results = run_batch(files, args.output, opts,
-                        progress=lambda i, n, p: p and print(f"[{i + 1}/{n}] {p}", file=sys.stderr))
+                        progress=lambda i, n, p: p and print(f"[{i + 1}/{n}] {p}", file=sys.stderr),
+                        log=lambda m: print(m, file=sys.stderr))
     for r in results:
         print(f"{r.status:6} {r.source} -> {r.output_pdf or r.output_text}")
+        if r.ocr_pages:
+            print(f"       read with OCR: page(s) {', '.join(map(str, r.ocr_pages))}")
         for w in ([r.error] if r.error else []) + r.warnings:
             print(f"       {w}")
         for page, cat, text in r.residues:

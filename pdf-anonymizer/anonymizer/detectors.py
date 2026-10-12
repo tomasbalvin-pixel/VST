@@ -281,19 +281,26 @@ _LABELS = {
 }
 
 
-def _label_regex() -> re.Pattern:
+def _label_alternatives() -> str:
     parts = []
     for cat, alts in _LABELS.items():
         options = [a.strip() for a in alts.replace("\n", " ").split("|") if a.strip()]
         options = [fold(re.sub(r"\s+", " ", o)) for o in options]
         options.sort(key=len, reverse=True)
         parts.append(f"(?P<{cat}>{'|'.join(options)})")
-    # The label must be a whole word and be followed by a colon (or tab).
-    return re.compile(r"(?<![\w.])(?:" + "|".join(parts) + r")\s*[:\t]\s*")
+    return "(?:" + "|".join(parts) + ")"
 
 
-_LABEL_RE = _label_regex()
+# "Jméno: Jan Novák" - a whole-word label followed by a colon (or tab), anywhere.
+_LABEL_RE = re.compile(r"(?<![\w.])" + _label_alternatives() + r"\s*[:\t]\s*")
+# Table layouts have no colon: "Datum narození | 14. 7. 1985" comes out as a label at
+# the start of a line, followed by the value or with the value on the next line.
+_BARE_LABEL_RE = re.compile(r"^[\s\-–•*·>\d.)(]*" + _label_alternatives() + r"(?=\s|$)\s*")
 _LINE_PREFIX = re.compile(r"^[\s\-–•*·>\d.)(]*$")
+
+
+def _is_label_line(line_folded: str) -> bool:
+    return bool(_LABEL_RE.match(line_folded.lstrip()) or _BARE_LABEL_RE.match(line_folded))
 
 
 def _labelled_fields(text: str, folded: str) -> list:
@@ -309,6 +316,13 @@ def _labelled_fields(text: str, folded: str) -> list:
                 accepted = prefix.endswith((",", ";", "|"))
             if accepted:
                 hits.append(m)
+        if not hits:
+            m = _BARE_LABEL_RE.match(line_f)
+            if m:
+                rest = text[ls + m.end():le].strip()
+                # Accept a short value that does not read like a sentence ("Adresa je uvedena níže").
+                if not rest or (len(rest.split()) <= 8 and not rest[0].islower()):
+                    hits = [m]
         for i, m in enumerate(hits):
             cat = m.lastgroup
             vs = ls + m.end()
@@ -318,7 +332,7 @@ def _labelled_fields(text: str, folded: str) -> list:
             if not value.strip() and i + 1 == len(hits) and li + 1 < len(lines):
                 ns, ne = lines[li + 1]
                 nxt = text[ns:ne]
-                if 0 < len(nxt.split()) <= 6 and not _LABEL_RE.match(folded[ns:ne].lstrip()):
+                if 0 < len(nxt.split()) <= 6 and not _is_label_line(folded[ns:ne]):
                     vs, ve, value = ns, ne, nxt
             stripped = value.strip(" ,;|")
             if not stripped or not re.search(r"\w", stripped):

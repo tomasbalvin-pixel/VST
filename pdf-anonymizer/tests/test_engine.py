@@ -6,6 +6,7 @@ import sys
 import pymupdf
 import pytest
 
+from anonymizer import ocr
 from anonymizer.detectors import DetectorConfig
 from anonymizer.engine import Options, analyze, run_batch
 
@@ -106,7 +107,18 @@ def test_custom_and_allow_terms(tmp_path):
     assert "Fénix" not in text and "Acme" not in text and "Praha" in text
 
 
-def test_scanned_page_is_flagged(tmp_path):
+def scan_of(src_pdf, path, dpi=200):
+    """Turn a PDF into an image-only 'scan'."""
+    src = pymupdf.open(src_pdf)
+    doc = pymupdf.open()
+    for sp in src:
+        page = doc.new_page(width=sp.rect.width, height=sp.rect.height)
+        page.insert_image(page.rect, pixmap=sp.get_pixmap(dpi=dpi))
+    doc.save(path)
+    return path
+
+
+def test_blank_scan_is_flagged(tmp_path, monkeypatch):
     pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 20, 20), False)
     doc = pymupdf.open()
     page = doc.new_page()
@@ -114,9 +126,41 @@ def test_scanned_page_is_flagged(tmp_path):
     path = str(tmp_path / "scan.pdf")
     doc.save(path)
     [r] = run_batch([path], str(tmp_path / "out"), Options())
-    assert r.status == "CHECK" and "no text layer" in r.warnings[0]
+    assert r.status == "CHECK"
+    monkeypatch.setattr(ocr, "available", lambda: False)
+    [r] = run_batch([path], str(tmp_path / "out1"), Options())
+    assert r.status == "CHECK" and "OCR is not available" in r.warnings[0]
     [r] = run_batch([path], str(tmp_path / "out2"), Options(remove_images=True))
     assert pymupdf.open(r.output_pdf)[0].get_image_info() == []
+
+
+@pytest.mark.skipif(not ocr.available(), reason="OCR language data not installed")
+def test_scanned_pdf_is_read_with_ocr_and_redacted(pdf, tmp_path):
+    scan = scan_of(pdf, str(tmp_path / "scan.pdf"))
+    [r] = run_batch([scan], str(tmp_path / "out"), Options())
+    assert r.ocr_pages == [1]
+    assert r.counts["PERSON"] >= 2 and r.counts["EMAIL"] == 1 and r.counts["NATIONAL_ID"] == 1
+    assert r.residues == [], r.residues
+    txt = open(r.output_text, encoding="utf-8").read()
+    assert "Jméno: [PERSON_1]" in txt
+    # What remains visible in the page image, read back by OCR:
+    out = pymupdf.open(r.output_pdf)
+    seen = ocr.page_text(out[0])
+    for s in ("Novák", "800312", "Vodičkova", "jan.novak"):
+        assert s not in seen
+    assert "neurčitou" in seen
+
+
+def test_table_labels_without_colon(tmp_path):
+    body = ("<table><tr><td>Datum narození</td><td>14. 7. 1985</td></tr>"
+            "<tr><td>Rodné číslo</td><td>850714/0012</td></tr>"
+            "<tr><td>Číslo účtu</td><td>2400123456/2010</td></tr></table>")
+    src = make_pdf(str(tmp_path / "t.pdf"), body=body)
+    [r] = run_batch([src], str(tmp_path / "out"), Options())
+    text = pymupdf.open(r.output_pdf)[0].get_text()
+    for s in ("1985", "850714", "2400123456"):
+        assert s not in text
+    assert "Datum narození" in text
 
 
 def test_form_fields_are_redacted(tmp_path):

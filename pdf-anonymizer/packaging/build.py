@@ -14,6 +14,10 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 from anonymizer import APP_NAME, __version__  # noqa: E402
 
+TESSDATA = os.path.join(ROOT, "tessdata")
+if not os.path.isfile(os.path.join(TESSDATA, "ces.traineddata")):
+    sys.exit("OCR language data missing: run  python packaging/fetch_tessdata.py  first")
+
 args = [
     os.path.join(ROOT, "packaging", "launcher.py"),
     "--name", APP_NAME,
@@ -26,6 +30,7 @@ args = [
     "--workpath", os.path.join(ROOT, "build"),
     "--specpath", os.path.join(ROOT, "build"),
     "--collect-submodules", "anonymizer",
+    "--add-data", f"{TESSDATA}{os.pathsep}tessdata",
     # Nothing in the program uses these; leaving them out keeps the bundle small.
     "--exclude-module", "numpy",
     "--exclude-module", "PIL",

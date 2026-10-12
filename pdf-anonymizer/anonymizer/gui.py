@@ -11,7 +11,7 @@ import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from . import APP_NAME, __version__, offline
+from . import APP_NAME, __version__, ocr, offline
 from .detectors import CATEGORIES, DetectorConfig
 from .engine import Options, analyze, collect_pdfs, run_batch
 
@@ -59,6 +59,8 @@ class App:
 
         status = "Offline: network access is blocked for this program." if offline.is_enforced() \
             else "Warning: offline guard not active."
+        status += f"   Scanned pages: read with OCR ({ocr.languages()})." if ocr.available() \
+            else "   OCR not available: scanned pages cannot be read."
         ttk.Label(main, text=status, foreground="#1a7f37" if offline.is_enforced() else "#b42318") \
             .pack(anchor="w", **pad)
 
@@ -258,7 +260,8 @@ class App:
             def progress(i, n, path):
                 self.queue.put(("progress", i, n, path))
             try:
-                results = run_batch(files, out, opts, progress=progress, cancelled=self.cancel.is_set)
+                results = run_batch(files, out, opts, progress=progress, cancelled=self.cancel.is_set,
+                                    log=lambda m: self.queue.put(("log", m)))
                 self.queue.put(("done", results, out))
             except Exception as exc:  # noqa: BLE001
                 self.queue.put(("error", f"{type(exc).__name__}: {exc}"))
@@ -279,7 +282,7 @@ class App:
                 if self.cancel.is_set():
                     break
                 self.queue.put(("progress", i, len(files), f))
-                analyses.append(analyze(f, cfg))
+                analyses.append(analyze(f, cfg, log=lambda m: self.queue.put(("log", m))))
             self.queue.put(("progress", len(analyses), len(files), None))
             self.queue.put(("preview", analyses))
 
@@ -296,6 +299,8 @@ class App:
                     self.progress.configure(maximum=max(n, 1), value=i)
                     if path:
                         self._write(f"[{i + 1}/{n}] {os.path.basename(path)}")
+                elif kind == "log":
+                    self._write(msg[1])
                 elif kind == "done":
                     self._busy(False)
                     self._report(msg[1], msg[2])
@@ -319,6 +324,8 @@ class App:
             found = ", ".join(f"{c}: {n}" for c, n in sorted(r.counts.items())) or "nothing found"
             self._write(f"{r.status:6} {name} → {os.path.basename(r.output_pdf or r.output_text or '-')}"
                         f" ({found})")
+            if r.ocr_pages:
+                self._write(f"       read with OCR: page(s) {', '.join(map(str, r.ocr_pages))}")
             if r.error:
                 self._write(f"       error: {r.error}")
             for w in r.warnings:
